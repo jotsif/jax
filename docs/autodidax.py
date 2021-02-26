@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
 # jupyter:
 #   jupytext:
 #     formats: ipynb,md:myst,py
@@ -19,7 +20,7 @@
 #       extension: .py
 #       format_name: light
 #       format_version: '1.5'
-#       jupytext_version: 1.10.0
+#       jupytext_version: 1.10.2
 #   kernelspec:
 #     display_name: Python 3
 #     name: python3
@@ -27,10 +28,9 @@
 
 # # Autodidax: JAX core from scratch
 #
-# Ever want to learn how JAX works, but the implementation seemed too
-# impenetrable? Well, you're in luck! By reading this tutorial, you'll learn
-# every big idea in JAX's core system. You'll even get clued into our weird
-# jargon!
+# Ever want to learn how JAX works, but the implementation seemed impenetrable?
+# Well, you're in luck! By reading this tutorial, you'll learn every big idea in
+# JAX's core system. You'll even get clued into our weird jargon!
 
 # ## Part 1: Transformations as interpreters: standard evaluation, `jvp`, and `vmap`
 #
@@ -48,14 +48,13 @@
 # atomic units of processing rather than compositions.
 #
 # "Transform" means "interpret differently." Instead of standard interpretation
-# where we apply primitive functions to numerical inputs to produce numerical
+# where we apply primitive operations to numerical inputs to produce numerical
 # outputs, we want to override primitive application and let different values
 # flow through our program. For example, we might want to replace the
 # application of every primitive with an application of [its JVP
 # rule](https://jax.readthedocs.io/en/latest/notebooks/autodiff_cookbook.html),
-# and let primal-tangent pairs flow through our program. Moreover, we want to
-# apply a composition of multiple transformations, leading to stacks of
-# interpreters.
+# and let primal-tangent pairs flow through our program. Moreover, we want to be
+# able to comopse multiple transformations, leading to stacks of interpreters.
 
 # ### JAX core machinery
 #
@@ -246,6 +245,13 @@ class ShapedArray:
   def str_short(self):
     return f'{self.dtype.name}[{",".join(str(d) for d in self.shape)}]'
 
+  def __hash__(self):
+    return hash((self.shape, self.dtype))
+
+  def __eq__(self, other):
+    return (type(self) is type(other) and
+            self.shape == other.shape and self.dtype == other.dtype)
+
 class ConcreteArray(ShapedArray):
   array_abstraction_level = 2
   val: np.ndarray
@@ -389,7 +395,7 @@ print(f(3.0))
 
 # ### Forward-mode autodiff with `jvp`
 #
-# First, a couple of helper functions:
+# First, a few helper functions:
 
 # +
 def zeros_like(val):
@@ -401,6 +407,10 @@ def unzip2(pairs):
     lst1.append(x1)
     lst2.append(x2)
   return lst1, lst2
+
+map_ = map
+def map(f, *xs):
+  return list(map_(f, *xs))
 
 
 # -
@@ -688,19 +698,19 @@ jacfwd(f, np.arange(3.))
 # rules, and for more complex primitives (like for convolution or advanced
 # indexing) each rule is harder to write. But the overarching design is no
 # different.
-# 1. **Transformations expect arrays in, single array out.**
-# 2. **No symbolic zeros in autodiff.**
-# 3. **No special call primitives yet.** The core machinery needs to be
+# 2. **No pytrees: transformations expect arrays in, single array out.**
+# 3. **Missing optimization: no symbolic zeros in autodiff.**
+# 4. **No special call primitives yet.** The core machinery needs to be
 #     generalized to handle the most flexible kind of higher-order primitive,
 #     used by `jax.custom_jvp` and `jax.custom_vjp`.
 
-# ## Part 2: Jaxprs, for `jit` and `vjp`
+# ## Part 2: Jaxprs
 #
 # The next transformations are the horizon are `jit` for just-in-time
 # compilation and `vjp` for reverse-mode autodiff.  (`grad` is just a small
-# wrapper around `vjp`.) For `jvp` and `vmap` we only needed each `Tracer` to
-# carry a little    bit of extra context, but for both `jit` and `vjp` we need
-# much richer context: we need to represent _programs_. That is, we need jaxprs!
+# wrapper around `vjp`.) Whereas `jvp` and `vmap` only needed each `Tracer` to
+# carry a little bit of extra context, for both `jit` and `vjp` we need much
+# richer context: we need to represent _programs_. That is, we need jaxprs!
 #
 # Jaxprs are JAX's internal intermediate representation of programs. Jaxprs are
 # an explicitly typed, functional, first-order language. We need a program
@@ -716,6 +726,9 @@ jacfwd(f, np.arange(3.))
 # trace- transformation, and so except for issues around handling native Python
 # control flow, any transformation could be implemented by first tracing to a
 # jaxpr and then interpreting the jaxpr.)
+
+# +
+# ### Jaxpr data strutures
 #
 # The jaxpr term syntax is roughly:
 #
@@ -778,7 +791,11 @@ class Jaxpr(NamedTuple):
 
 def raise_to_shaped(aval):
   return ShapedArray(aval.shape, aval.dtype)
+# -
 
+# Type-checking a jaxpr involves checking that there are no unbound variables,
+# that variables are only bound once, and that for each equation the type of
+# the primitive application matches the type of the output binders.
 
 # +
 class JaxprType:
@@ -799,12 +816,14 @@ def typecheck_jaxpr(jaxpr: Jaxpr) -> JaxprType:
   env: Set[Var] = set()
 
   for v in jaxpr.in_binders:
+    if v in env: raise TypeError
     env.add(v)
 
   for eqn in jaxpr.eqns:
     in_types = [typecheck_atom(env, x) for x in eqn.inputs]
     out_type = abstract_eval_rules[eqn.primitive](*in_types, **eqn.params)
     if not types_equal(out_type, eqn.out_binder.aval): raise TypeError
+    if eqn.out_binder in env: raise TypeError
     env.add(eqn.out_binder)
 
   out_type = typecheck_atom(env, jaxpr.out)
@@ -821,15 +840,15 @@ def typecheck_atom(env: Set[Var], x: Atom) -> ShapedArray:
 
 def types_equal(a: ShapedArray, b: ShapedArray) -> bool:
   return a.shape == b.shape and a.dtype == b.dtype
-
-
 # -
 
+# ### Building jaxprs with tracing
+#
 # Now that we have jaxprs as a data structure, we need ways to produce these
 # from tracing Python code. In general there are two variants of how we trace to
 # a jaxpr; `jit` uses one and `vjp` uses the other. We'll start with the one
-# used   by `jit`, which is also used by control flow primitives like
-# `lax.cond`, `lax.while_loop`, and `lax.scan`.
+# used by `jit`, which is also used by control flow primitives like `lax.cond`,
+# `lax.while_loop`, and `lax.scan`.
 
 # +
 # NB: the analogous class in JAX is called 'DynamicJaxprTracer'
@@ -872,12 +891,10 @@ class JaxprTrace(Trace):
 
 # NB: in JAX, instead of a dict we attach impl rules to the Primitive instance
 abstract_eval_rules = {}
-
-
 # -
 
 # Notice that we keep as interpreter-global data a builder object, which keeps
-# track of variables, constants, and eqns  as we build up the jaxpr.
+# track of variables, constants, and eqns as we build up the jaxpr.
 
 class JaxprBuilder:
   eqns: List[JaxprEqn]
@@ -959,14 +976,16 @@ def reduce_sum_abstract_eval_rule(aval_in, *, axis):
   new_shape = [d for i, d in enumerate(aval_in.shape) if i != axis]
   return ShapedArray(tuple(new_shape), aval_in.dtype)
 abstract_eval_rules[reduce_sum_p] = reduce_sum_abstract_eval_rule
-
-
 # -
 
-# To check our implementation, we can add a `make_jaxpr` transformation and
-# first pretty-printer:
+# To check our implementation of jaxprs, we can add a `make_jaxpr`
+# transformation and a pretty-printer:
 
-def make_jaxpr(f, avals_in):
+# +
+from functools import lru_cache
+
+@lru_cache()  # ShapedArrays are hashable
+def make_jaxpr(f, *avals_in):
   builder = JaxprBuilder()
   with new_main(JaxprTrace, builder) as main:
     trace = JaxprTrace(main)
@@ -1037,10 +1056,177 @@ def pp_params(params: Dict[str, Any]) -> PPrint:
     return pp(' [ ') >> vcat([pp(f'{k}={v}') for k, v in items]) >> pp(' ] ')
   else:
     return pp(' ')
+# -
+
+jaxpr, consts = make_jaxpr(lambda x: 2. * x, raise_to_shaped(get_aval(3.)))
+print(pp_jaxpr(jaxpr))
+print(typecheck_jaxpr(jaxpr))
+
+# That's it for jaxprs! With jaxprs in hand, we can implement the remaining
+# major JAX features. But before moving on, let's highlight some
+# simplifications we've made:
+# 1. **Single-output primitives and jaxprs.**
+
+# ## Part 3: `jit`
+#
+# While `jit` has a transformation-like API, under the hood it's really a
+# higher-order primitive rather than a transformation. A primitive is
+# _higher-order_ when it's parameterized by a jaxpr.
+
+# +
+def jit(f):
+  def f_jitted(*args):
+    avals_in = [raise_to_shaped(get_aval(x)) for x in args]
+    jaxpr, consts = make_jaxpr(f, *avals_in)
+    return bind(xla_call_p, *consts, *args, jaxpr=jaxpr, num_consts=len(consts))
+  return f_jitted
+
+xla_call_p = Primitive('xla_call')
+# -
+
+# With any new primitive, we need to give it transformation rules, starting with
+# its evaluation rule. When we evaluate an application of the `xla_call`
+# primitive, we want to stage out out the computation to XLA. That involves
+# translating the jaxpr to an XLA HLO program, transferring the argument values
+# to the XLA device, executing the XLA program, and transferring back the
+# results. We'll tackle each of those in turn, starting with the lowering from
+# jaxprs to XLA HLO.
+
+# +
+from jax.lib import xla_bridge as xb
+from jax.lib import xla_client as xc
+xe = xc._xla
+xops = xc._xla.ops
+
+def xla_call_impl(*args, jaxpr: Jaxpr, num_consts: int):
+  consts, args = args[:num_consts], args[num_consts:]
+  hashable_consts = tuple(map(IDHashable, consts))
+  execute = xla_callable(IDHashable(jaxpr), hashable_consts)
+  return execute(*args)
+impl_rules[xla_call_p] = xla_call_impl
+
+class IDHashable:
+  val: Any
+
+  def __init__(self, val):
+    self.val = val
+
+  def __hash__(self) -> int:
+    return id(self.val)
+
+  def __eq__(self, other):
+    return type(other) is IDHashable and id(self.val) == id(other.val)
+
+@lru_cache()
+def xla_callable(hashable_jaxpr: IDHashable, hashable_consts: Tuple[IDHashable]):
+  jaxpr: Jaxpr = hashable_jaxpr.val
+  consts = [x.val for x in hashable_consts]
+  c = xb.make_computation_builder('xla_call')
+  xla_consts = _xla_consts(c, consts)
+  xla_params = _xla_params(c, [v.aval for v in jaxpr.in_binders])
+  out = jaxpr_subcomp(c, jaxpr, xla_consts + xla_params)
+  compiled = xb.get_backend(None).compile(c.build(out))
+  return partial(execute_compiled, compiled)
+
+def _xla_consts(c: xe.XlaBuilder, consts: List[Any]) -> List[xe.XlaOp]:
+  unique_consts = {id(const): const for const in consts}
+  xla_consts = {
+      id_: xb.constant(c, const) for id_, const in unique_consts.items()}
+  return [xla_consts[id(const)] for const in consts]
+
+def _xla_params(c: xe.XlaBuilder, avals_in: List[ShapedArray]) -> List[xe.XlaOp]:
+  return [xb.parameter(c, i, _xla_shape(a)) for i, a in enumerate(avals_in)]
+
+def _xla_shape(aval: ShapedArray) -> xe.Shape:
+  return xc.Shape.array_shape(xc.dtype_to_etype(aval.dtype), aval.shape)
+
+def jaxpr_subcomp(c: xe.XlaBuilder, jaxpr: Jaxpr, args: List[xe.XlaOp]
+                  ) -> xe.XlaOp:
+  env: Dict[Var, xe.XlaOp] = {}
+
+  def read(x: Atom) -> xe.XlaOp:
+    return env[x] if type(x) is Var else xb.constant(c, x.val)
+
+  def write(v: Var, val: xe.XlaOp) -> None:
+    env[v] = val
+
+  map(write, jaxpr.in_binders, args)
+  for eqn in jaxpr.eqns:
+    in_avals = [x.aval for x in eqn.inputs]
+    in_vals = map(read, eqn.inputs)
+    rule = xla_translations[eqn.primitive]
+    out_val = rule(c, in_avals, in_vals, **eqn.params)
+    write(eqn.out_binder, out_val)
+  return read(jaxpr.out)
+
+def execute_compiled(compiled, *args):
+  input_bufs = [input_handlers[type(x)](x) for x in args]
+  out_buf, = compiled.execute(input_bufs)
+  return out_buf.to_py()
+
+input_handlers = {
+    int: xb.get_backend(None).buffer_from_pyval,
+    float: xb.get_backend(None).buffer_from_pyval,
+    np.ndarray: xb.get_backend(None).buffer_from_pyval,
+}
+
+xla_translations = {}
 
 
 # -
 
-jaxpr, consts = make_jaxpr(lambda x: 2. * x, [raise_to_shaped(get_aval(3.))])
-print(pp_jaxpr(jaxpr))
-print(typecheck_jaxpr(jaxpr))
+
+# Notice that `jaxpr_subcomp` has the structure of a simple interpreter. That's
+# a common pattern: the way we process jaxprs is usually with an interpreter.
+# And as with any interpreter, we need an interpretation rule for each
+# primitive:
+
+# +
+def sin_translation(c, in_avals, in_vals):
+  del in_avals
+  x, = in_vals
+  return xops.Sin(x)
+xla_translations[sin_p] = sin_translation
+
+def cos_translation(c, in_avals, in_vals):
+  del in_avals
+  x, = in_vals
+  return xops.Cos(x)
+xla_translations[cos_p] = cos_translation
+
+def mul_translation(c, in_avals, in_vals):
+  del in_avals
+  x, y = in_vals
+  return xops.Mul(x, y)
+xla_translations[mul_p] = mul_translation
+
+
+# -
+
+
+# With that, we can now use `jit` to stage out, compile, and execute programs
+# with XLA!
+
+# +
+@jit
+def f(x, y):
+  print('tracing!')
+  return sin(x) * cos(y)
+
+z = f(3., 4.)  # 'compiling!' prints the first time
+print(z)
+
+z = f(4., 5.)  # 'compiling!' doesn't print because of the compilation cache hit
+print(z)
+
+# TODO jit of grad
+# TODO jit of vmap
+# -
+
+# Instead of implementing `jit` to first trace to a jaxpr and then to lower the
+# jaxpr to XLA HLO, it might appear that we could have skipped the jaxpr step
+# and just lowered to HLO while tracing. That is, perhaps we could have instead
+# implemented `jit` with a `Trace` and `Tracer` that appended to the XLA HLO
+# graph incrementally on each primitive bind. That's correct for now, but won't
+# be possible when we introduce compiled SPMD computations because there we must
+# know the number of replicas needed before compiling the program.
