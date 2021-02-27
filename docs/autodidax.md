@@ -1339,6 +1339,8 @@ def make_jaxpr_v1(f, *avals_in):
 ```
 
 ```{code-cell}
+:tags: [hide-input]
+
 from collections import defaultdict
 import string
 

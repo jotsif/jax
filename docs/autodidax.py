@@ -1145,7 +1145,7 @@ def make_jaxpr_v1(f, *avals_in):
     jaxpr, consts = builder.build(tracers_in, tracers_out)
   return jaxpr, consts, out_tree()
 
-# +
+# + tags=["hide-input"]
 from collections import defaultdict
 import string
 
