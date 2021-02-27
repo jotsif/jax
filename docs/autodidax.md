@@ -1544,9 +1544,7 @@ def jit(f):
     outs = bind(xla_call_p, *consts, *args, jaxpr=jaxpr, num_consts=len(consts))
     return tree_unflatten(out_tree, outs)
   return f_jitted
-```
 
-```{code-cell}
 xla_call_p = Primitive('xla_call')
 ```
 
@@ -1582,18 +1580,14 @@ from jax.lib import xla_bridge as xb
 from jax.lib import xla_client as xc
 xe = xc._xla
 xops = xc._xla.ops
-```
 
-```{code-cell}
 def xla_call_impl(*args, jaxpr: Jaxpr, num_consts: int):
   consts, args = args[:num_consts], args[num_consts:]
   hashable_consts = tuple(map(IDHashable, consts))
   execute = xla_callable(IDHashable(jaxpr), hashable_consts)
   return execute(*args)
 impl_rules[xla_call_p] = xla_call_impl
-```
 
-```{code-cell}
 @lru_cache()
 def xla_callable(hashable_jaxpr: IDHashable, hashable_consts: Tuple[IDHashable]):
   jaxpr: Jaxpr = hashable_jaxpr.val
@@ -1606,22 +1600,16 @@ def xla_callable(hashable_jaxpr: IDHashable, hashable_consts: Tuple[IDHashable])
   out = xops.Tuple(c, outs)
   compiled = xb.get_backend(None).compile(c.build(out))
   return partial(execute_compiled, compiled)
-```
 
-```{code-cell}
 def _xla_consts(c: xe.XlaBuilder, consts: List[Any]) -> List[xe.XlaOp]:
   unique_consts = {id(cnst): cnst for cnst in consts}
   xla_consts = {
       id_: xops.ConstantLiteral(c, cnst) for id_, cnst in unique_consts.items()}
   return [xla_consts[id(cnst)] for cnst in consts]
-```
 
-```{code-cell}
 def _xla_params(c: xe.XlaBuilder, avals_in: List[ShapedArray]) -> List[xe.XlaOp]:
   return [xb.parameter(c, i, _xla_shape(a)) for i, a in enumerate(avals_in)]
-```
 
-```{code-cell}
 def _xla_shape(aval: ShapedArray) -> xe.Shape:
   return xc.Shape.array_shape(xc.dtype_to_etype(aval.dtype), aval.shape)
 ```
@@ -1649,24 +1637,18 @@ def jaxpr_subcomp(c: xe.XlaBuilder, jaxpr: Jaxpr, args: List[xe.XlaOp]
     out_vals = rule(c, in_avals, in_vals, **eqn.params)
     map(write, eqn.out_binders, out_vals)
   return map(read, jaxpr.outs)
-```
 
-```{code-cell}
 def execute_compiled(compiled, *args):
   input_bufs = [input_handlers[type(x)](x) for x in args]
   out_bufs = compiled.execute(input_bufs)
   return [buf.to_py() for buf in out_bufs]
-```
 
-```{code-cell}
 input_handlers = {
     int: xb.get_backend(None).buffer_from_pyval,
     float: xb.get_backend(None).buffer_from_pyval,
     np.ndarray: xb.get_backend(None).buffer_from_pyval,
 }
-```
 
-```{code-cell}
 xla_translations = {}
 ```
 
@@ -1740,20 +1722,24 @@ def deriv(f):
 
 print(    deriv(deriv(f))(3.))
 print(jit(deriv(deriv(f)))(3.))
+```
 
-# Instead of implementing `jit` to first trace to a jaxpr and then to lower the
-# jaxpr to XLA HLO, it might appear that we could have skipped the jaxpr step
-# and just lowered to HLO while tracing. That is, perhaps we could have instead
-# implemented `jit` with a `Trace` and `Tracer` that appended to the XLA HLO
-# graph incrementally on each primitive bind. That's correct for now, but won't
-# be possible when we introduce compiled SPMD computations because there we must
-# know the number of replicas needed before compiling the program.
+Instead of implementing `jit` to first trace to a jaxpr and then to lower the
+jaxpr to XLA HLO, it might appear that we could have skipped the jaxpr step
+and just lowered to HLO while tracing. That is, perhaps we could have instead
+implemented `jit` with a `Trace` and `Tracer` that appended to the XLA HLO
+graph incrementally on each primitive bind. That's correct for now, but won't
+be possible when we introduce compiled SPMD computations because there we must
+know the number of replicas needed before compiling the program.
 
-# We haven't yet defined any transformation rules for `xla_call_p` other than
-# its evaluation rule. That is, we can't yet do `vmap`-of-`jit` or
-# `jvp`-of-`jit` or even `jit`-of`-jit`. Instead `jit` has to be at the "top
-# level." Let's fix that!
++++
 
+We haven't yet defined any transformation rules for `xla_call_p` other than
+its evaluation rule. That is, we can't yet do `vmap`-of-`jit` or
+`jvp`-of-`jit` or even `jit`-of`-jit`. Instead `jit` has to be at the "top
+level." Let's fix that!
+
+```{code-cell}
 def xla_call_jvp_rule(primals, tangents, *, jaxpr, num_consts):
   del num_consts  # Unused.
   new_jaxpr, new_consts = jvp_jaxpr(jaxpr)
@@ -1763,7 +1749,9 @@ def xla_call_jvp_rule(primals, tangents, *, jaxpr, num_consts):
   primals_out, tangents_out = outs[:n], outs[n:]
   return primals_out, tangents_out
 jvp_rules[xla_call_p] = xla_call_jvp_rule
+```
 
+```{code-cell}
 def jvp_jaxpr(jaxpr: Jaxpr) -> Tuple[Jaxpr, List[Any]]:
   def jvp_traceable(*primals_and_tangents):
     n = len(primals_and_tangents) // 2

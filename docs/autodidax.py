@@ -1325,6 +1325,7 @@ print(pp_jaxpr(jaxpr))
 
 # With the initial-style approach, here's the user-facing `jit` wrapper:
 
+# +
 def jit(f):
   def f_jitted(*args):
     avals_in = [raise_to_shaped(get_aval(x)) for x in args]
@@ -1334,6 +1335,7 @@ def jit(f):
   return f_jitted
 
 xla_call_p = Primitive('xla_call')
+# -
 
 # With any new primitive, we need to give it transformation rules, starting with
 # its evaluation rule. When we evaluate an application of the `xla_call`
@@ -1360,6 +1362,7 @@ class IDHashable:
 
 # Next, we'll define the evaluation rule for `xla_call`:
 
+# +
 from jax.lib import xla_bridge as xb
 from jax.lib import xla_client as xc
 xe = xc._xla
@@ -1396,11 +1399,13 @@ def _xla_params(c: xe.XlaBuilder, avals_in: List[ShapedArray]) -> List[xe.XlaOp]
 
 def _xla_shape(aval: ShapedArray) -> xe.Shape:
   return xc.Shape.array_shape(xc.dtype_to_etype(aval.dtype), aval.shape)
+# -
 
 # The main action is in `xla_callable`, which compiles a jaxpr into an XLA HLO
 # program using `jaxpr_subcomp`, then returns a callable which executes the
 # compiled program:
 
+# +
 def jaxpr_subcomp(c: xe.XlaBuilder, jaxpr: Jaxpr, args: List[xe.XlaOp]
                   ) -> xe.XlaOp:
   env: Dict[Var, xe.XlaOp] = {}
@@ -1432,7 +1437,7 @@ input_handlers = {
 }
 
 xla_translations = {}
-
+# -
 
 # Notice that `jaxpr_subcomp` has the structure of a simple interpreter. That's
 # a common pattern: the way we process jaxprs is usually with an interpreter.
@@ -1492,6 +1497,7 @@ def deriv(f):
 
 print(    deriv(deriv(f))(3.))
 print(jit(deriv(deriv(f)))(3.))
+# -
 
 # Instead of implementing `jit` to first trace to a jaxpr and then to lower the
 # jaxpr to XLA HLO, it might appear that we could have skipped the jaxpr step
