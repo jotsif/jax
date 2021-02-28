@@ -169,12 +169,18 @@ def prepare_wheel(sources_path):
 
 def build_wheel(sources_path, output_path):
   """Builds a wheel in `output_path` using the source tree in `sources_path`."""
+  system = platform.system()
   platform_name = {
     "Linux": "manylinux2010",
-    "Darwin": "macosx_10_9",
+    "Darwin": "macosx_11_0" if int(platform.mac_ver()[0].split(".")[0]) > 10 else "macosx_10_9",
     "Windows": "win",
-  }[platform.system()]
-  cpu_name = "amd64" if platform.system() == "Windows" else "x86_64"
+  }[system]
+  if system == "Darwin":
+      cpu_name = platform.mac_ver()[2]
+  elif system == "Windows":
+      cpu_name = "amd64"
+  else:
+      cpu_name = "x86_64"
   python_tag_arg = (f"--python-tag=cp{sys.version_info.major}"
                     f"{sys.version_info.minor}")
   platform_tag_arg = f"--plat-name={platform_name}_{cpu_name}"

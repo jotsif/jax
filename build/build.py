@@ -99,7 +99,14 @@ bazel_packages = {
 
 def download_and_verify_bazel():
   """Downloads a bazel binary from Github, verifying its SHA256 hash."""
-  package = bazel_packages.get(platform.system())
+  system = platform.system()
+  processor = platform.processor()
+  if system == "Darwin" and processor == "arm":
+      print("Bazel do not provide darwin_arm64 packages yet. "
+            "Please install Bazel with brew and use bazel_path instead.")
+      sys.exit(-1)
+  else:
+      package = bazel_packages.get(platform.system())
   if package is None:
     return None
 
@@ -162,7 +169,7 @@ def get_bazel_path(bazel_path_flag):
   https://blog.bazel.build/2019/12/19/bazel-2.0.html#other-important-changes).
   """
   for path in filter(None, get_bazel_paths(bazel_path_flag)):
-    if check_bazel_version(path):
+    if not check_bazel_version(path):
       return path
 
   print("Cannot find or download bazel. Please install bazel.")
@@ -254,6 +261,11 @@ build:windows --host_cxxopt=/std:c++14
 
 build:linux --config=posix
 build:macos --config=posix
+# Apple silicon config
+build:macos_arm64 --config=posix
+build:macos_arm64 --config=macos
+build:macos_arm64 --apple_platform_type=macos
+build:macos_arm64 --cpu=darwin_arm64
 
 # Generate PDB files, to generate useful PDBs, in opt compilation_mode
 # --copt /Z7 is needed.
@@ -272,8 +284,6 @@ build:short_logs --output_filter=DONT_MATCH_ANYTHING
 # See https://github.com/tensorflow/tensorflow/issues/39467
 build:linux --copt=-Wno-stringop-truncation
 
-# Build with Cloud TPU support.
-build --define=with_tpu_support=true
 """
 
 
@@ -297,6 +307,12 @@ def write_bazelrc(cuda_toolkit_path=None, cudnn_install_path=None,
     if rocm_toolkit_path:
       f.write("build --action_env ROCM_PATH=\"{rocm_toolkit_path}\"\n"
               .format(rocm_toolkit_path=rocm_toolkit_path))
+    # Compilation fails with on apple silicon if including tpu support
+    if platform.system() == "Darwin" and platform.processor() == "arm":
+      tpu_support = "false"
+    else:
+      tpu_support = "true"
+    f.write(f"build --define=with_tpu_support={tpu_support}\n")
 
 BANNER = r"""
      _   _  __  __
@@ -484,6 +500,10 @@ def main():
   print("\nBuilding XLA and installing it in the jaxlib source tree...")
   config_args = args.bazel_options
   config_args += ["--config=short_logs"]
+  # This is most likely due to Xcode and os version though
+  if platform.system() == "Darwin" and platform.processor() == "arm":
+      config_args += ["--copt=-Wno-implicit-function-declaration",
+                      "--config=macos_arm64"]
   if args.target_cpu_features == "release":
     if platform.uname().machine == "x86_64":
       config_args += ["--config=avx_windows" if is_windows()
